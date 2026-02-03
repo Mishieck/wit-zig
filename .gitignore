@@ -1,0 +1,8 @@
+# Output
+zig-out
+
+# Cache
+.zig-cache
+
+# Generated Files
+*.json

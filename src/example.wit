@@ -1,0 +1,97 @@
+package specification-example:component;
+
+interface methods {
+  name: func (param-first: u8, param-second: u16,) -> u32;
+  // ...
+}
+
+interface component {
+  // Can list one or more of the values
+  enum component-type {
+    content,
+    graphic,
+    classic,    
+    app, // client or server
+  }
+
+  record events {
+    event: u8,
+    // ...
+  }
+
+  enum states-state {
+    state-value,
+    // ...
+  }
+
+  enum states-state-state {
+    state-value,
+    // ...
+  }
+  
+  variant states-state-nested {
+    state-first,
+    state-second(states-state-state),
+  }
+
+  variant states {
+    state-first(states-state-nested),
+    state-second(states-state-nested),
+  }
+
+  record attributes {
+    name: string,
+    // ...
+  }
+
+  enum model-type {empty}
+
+  record named-slots {
+    name: model-type,
+    // ...
+  }
+
+  record slots {
+    named: named-slots,
+    unnamed: list<model-type>, // or tuple<...>
+  }
+
+  record parts {
+    name-first: model-type,
+    name-second: list<model-type>,
+    // ...
+  }
+
+  enum element-event-handlers {
+    event,
+    // ...
+  }
+
+  record element-handlers {
+    element: element-event-handlers,
+    // ...
+  }
+
+  enum state-state-handlers {
+    event,
+    // ...
+  }
+
+  record state-handlers {
+    state: state-state-handlers,
+    // ...
+  }
+
+  record handlers {
+    %for: element-handlers,
+    %in: state-handlers,
+    %on: element-event-handlers,
+  }
+}  
+
+world component-world {
+  export component;
+  // export pack:interfac/name; // interface dependency
+  // include world-name; // world dependency
+  // more dependencies
+}
