@@ -6,3 +6,6 @@ zig-out
 
 # Generated Files
 *.json
+
+# tree-sitter-wit
+tree-sitter-wit

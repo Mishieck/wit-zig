@@ -1,27 +1,54 @@
 const std = @import("std");
-const wit_zig = @import("wit_zig");
+const debug = std.debug;
+const assert = debug.assert;
+
+const ts = @import("tree_sitter");
+
+extern fn tree_sitter_wit() callconv(.c) *ts.Language;
 
 pub fn main() !void {
-    // Prints to stderr, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-    try wit_zig.bufferedPrint();
-}
+    debug.print("Testing zig_tree_sitter\n", .{});
+    // Create a parser for the zig language
+    const language = tree_sitter_wit();
+    defer language.destroy();
 
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(language);
 
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    const code =
+        \\package test:my-package;
+        \\
+        \\interface inter {
+        \\    type name = u8; 
+        \\}
+        \\
+        \\world my-world {
+        \\    import foo: func() -> string;
+        \\    export bar: func(s: string) -> u32;
+        \\}
+    ;
+
+    // // Parse some source code and get the root node
+    const tree = parser.parseString(code, null);
+    defer tree.?.destroy();
+
+    const node = tree.?.rootNode();
+    assert(std.mem.eql(u8, node.kind(), "source_file"));
+    assert(!node.hasError());
+
+    // Create a query and execute it
+    var error_offset: u32 = 0;
+    const query_string = "(interface_item name: (id) @module)";
+    const query = try ts.Query.create(language, query_string, &error_offset);
+    defer query.destroy();
+
+    const cursor = ts.QueryCursor.create();
+    defer cursor.destroy();
+    cursor.exec(query, node);
+
+    // Get the captured node of the first match
+    const match = cursor.nextMatch().?;
+    const capture = match.captures[0].node;
+    assert(std.mem.eql(u8, capture.kind(), "id"));
 }
