@@ -2,14 +2,14 @@ const std = @import("std");
 const debug = std.debug;
 const assert = debug.assert;
 
-const ts = @import("tree_sitter");
-
-extern fn tree_sitter_wit() callconv(.c) *ts.Language;
+const wit_zig = @import("wit_zig");
+const tree_sitter = wit_zig.tree_sitter;
+const ts = tree_sitter.tree_sitter;
+const tsw = tree_sitter.tree_sitter_wit;
 
 pub fn main() !void {
-    debug.print("Testing zig_tree_sitter\n", .{});
     // Create a parser for the zig language
-    const language = tree_sitter_wit();
+    const language = tsw();
     defer language.destroy();
 
     const parser = ts.Parser.create();
@@ -51,4 +51,5 @@ pub fn main() !void {
     const match = cursor.nextMatch().?;
     const capture = match.captures[0].node;
     assert(std.mem.eql(u8, capture.kind(), "id"));
+    debug.print("Done!\n", .{});
 }

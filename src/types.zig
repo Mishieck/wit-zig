@@ -1,11 +1,49 @@
 //! Reference:  https://github.com/bytecodealliance/wasm-tools/blob/main/crates/wit-parser/src/ast.rs
 
+const std = @import("std");
+const mem = std.mem;
+const debug = std.debug;
+const testing = std.testing;
+const tree_sitter = @import("./tree_sitter.zig");
+const ts = tree_sitter.tree_sitter;
+const tsw = tree_sitter.tree_sitter_wit;
+
 /// Representation of a single WIT `*.wit` file and nested packages.
 pub const Package = struct {
+    const Self = @This();
+
     /// Optional `package foo:bar;` header
-    id: ?PackageName,
+    id: ?*const PackageName,
     /// Other AST items.
-    declarations: DeclarationList,
+    declarations: []PackageDeclaration,
+
+    pub fn fromNode(allocator: mem.Allocator, node: *const ts.Node) !*Self {
+        const self = try allocator.create(Self);
+        const first_child = node.namedChild(0);
+        var id: ?*const PackageName = null;
+        var declarations = std.array_list.Managed(PackageDeclaration).init(allocator);
+        defer declarations.deinit();
+
+        if (first_child) |fc| {
+            const kind = fc.kind();
+            const is_package_decl = mem.eql(u8, kind, "package_decl");
+            if (is_package_decl) id = try PackageName.fromNode(allocator, &fc);
+        }
+
+        self.* = .{
+            .id = id,
+            .declarations = try allocator.dupe(PackageDeclaration, declarations.items),
+        };
+
+        return self;
+    }
+
+    pub fn deinit(self: *Self, allocator: mem.Allocator) void {
+        if (self.id) |id| id.deinit(allocator);
+        for (self.declarations) |dec| _ = dec;
+        allocator.free(self.declarations);
+        allocator.destroy(self);
+    }
 };
 
 /// Stores all of the declarations in a package's scope. In AST terms, this
@@ -45,18 +83,61 @@ pub const Package = struct {
 /// ```
 pub const DeclarationList = []Declaration;
 
+pub const ToplevelDeclaration = union(enum) {
+    package: *const Package,
+    interface: *const Interface,
+    world: *const World,
+    use: *const ToplevelUse,
+};
+
+pub const PackageDeclaration = union(enum) {
+    package: *const Package,
+    interface: *const Interface,
+    world: *const World,
+    use: *const ToplevelUse,
+};
+
 pub const Declaration = union(enum) {
     interface: *const Interface,
     world: *const World,
     use: *const ToplevelUse,
     package: *const Package,
+
+    // pub fn fromNode(allocator: mem.Allocator, node: *const ts.Node) !*Declaration {
+    //     _ = allocator;
+    //     _ = node;
+    // }
 };
 
 pub const PackageName = struct {
-    docs: *const Docs,
+    docs: Docs,
     namespace: Id,
     name: Id,
     version: ?*const Version,
+
+    pub fn fromNode(allocator: mem.Allocator, node: *const ts.Node) !*PackageName {
+        _ = node;
+        const self = try allocator.create(PackageName);
+        var docs = std.array_list.Managed([]const u8).init(allocator);
+        defer docs.deinit();
+        errdefer docs.deinit();
+        _ = &docs;
+
+        self.* = .{
+            .docs = try allocator.dupe([]const u8, docs.items),
+            .namespace = "",
+            .name = "",
+            .version = null,
+        };
+
+        debug.print("{}", .{self});
+        return self;
+    }
+
+    pub fn deinit(self: *const PackageName, allocator: mem.Allocator) void {
+        allocator.free(self.docs);
+        allocator.destroy(self);
+    }
 };
 
 pub const ToplevelUse = struct {
@@ -143,7 +224,7 @@ pub const TypeDef = struct {
     docs: Docs,
     attributes: []Attribute,
     name: Id,
-    ty: Type,
+    ty: *const Type,
 };
 
 pub const Type = union(enum) {
@@ -161,7 +242,7 @@ pub const Type = union(enum) {
     char,
     string,
     name: Id,
-    list: Type,
+    list: *const List,
     map: Map,
     fixed_length_list: *const FixedLengthList,
     handle: Handle,
@@ -171,10 +252,10 @@ pub const Type = union(enum) {
     variant: Variant,
     tuple: Tuple,
     @"enum": Enum,
-    option: Option,
+    option: *const Option,
     result: Result,
-    future: Future,
-    stream: ?Type,
+    future: *const Future,
+    stream: *const Stream,
     error_context,
 };
 
@@ -196,7 +277,7 @@ pub const Record = []Field;
 pub const Field = struct {
     docs: Docs,
     name: Id,
-    ty: Type,
+    ty: *const Type,
 };
 
 pub const Flags = []Flag;
@@ -211,7 +292,7 @@ pub const Variant = []Case;
 pub const Case = struct {
     docs: Docs,
     name: Id,
-    ty: ?Type,
+    ty: ?*const Type,
 };
 
 pub const Enum = []*const EnumCase;
@@ -221,25 +302,26 @@ pub const EnumCase = struct {
     name: Id,
 };
 
-pub const Option = Type;
-pub const List = Type;
+pub const Option = struct { type: *const Type };
+pub const List = struct { type: *const Type };
+pub const Stream = ?*const Type;
 
 pub const Map = struct {
-    key: Type,
-    value: Type,
+    key: *const Type,
+    value: *const Type,
 };
 
 pub const FixedLengthList = struct {
-    ty: Type,
+    ty: *const Type,
     size: u32,
 };
 
-pub const Future = ?Type;
-pub const Tuple = []Type;
+pub const Future = ?*const Type;
+pub const Tuple = []*const Type;
 
 pub const Result = struct {
-    ok: ?Type,
-    err: ?Type,
+    ok: ?*const Type,
+    err: ?*const Type,
 };
 
 pub const NamedFunc = struct {
@@ -250,12 +332,12 @@ pub const NamedFunc = struct {
 };
 
 pub const ParamList = []*Param;
-pub const Param = struct { Id, Type };
+pub const Param = struct { Id, *const Type };
 
 pub const Func = struct {
     async: bool,
     params: ParamList,
-    result: ?Type,
+    result: ?*const Type,
 };
 
 pub const Attribute = union(enum) {
@@ -272,3 +354,34 @@ pub const Version = struct {
     pre: ?[]const u8,
     build: ?[]const u8,
 };
+
+test Package {
+    const allocator = testing.allocator;
+    const language = tsw();
+    defer language.destroy();
+
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(language);
+
+    const code =
+        \\package test:my-package;
+        \\
+        \\interface inter {
+        \\    type name = u8; 
+        \\}
+        \\
+        \\world my-world {
+        \\    import foo: func() -> string;
+        \\    export bar: func(s: string) -> u32;
+        \\}
+    ;
+
+    // // Parse some source code and get the root node
+    const tree = parser.parseString(code, null);
+    defer tree.?.destroy();
+    const node = tree.?.rootNode();
+
+    var package = try Package.fromNode(allocator, &node);
+    defer package.deinit(allocator);
+}
