@@ -8,6 +8,9 @@ The library aims to have the following features:
 
 - [x] Parsing WIT files in Zig.
 - [ ] Convert WIT files to Zig types.
+  - [ ] Package
+    - [x] Id
+    - [ ] Declarations
 - [ ] Modify WIT packages.
 - [ ] Convert Zig types to JSON. 
 

@@ -17,7 +17,11 @@ pub const Package = struct {
     /// Other AST items.
     declarations: []PackageDeclaration,
 
-    pub fn fromNode(allocator: mem.Allocator, node: *const ts.Node) !*Self {
+    pub fn fromNode(
+        allocator: mem.Allocator,
+        source: []const u8,
+        node: *const ts.Node,
+    ) !*Self {
         const self = try allocator.create(Self);
         const first_child = node.namedChild(0);
         var id: ?*const PackageName = null;
@@ -27,7 +31,7 @@ pub const Package = struct {
         if (first_child) |fc| {
             const kind = fc.kind();
             const is_package_decl = mem.eql(u8, kind, "package_decl");
-            if (is_package_decl) id = try PackageName.fromNode(allocator, &fc);
+            if (is_package_decl) id = try PackageName.fromNode(allocator, source, &fc);
         }
 
         self.* = .{
@@ -113,29 +117,53 @@ pub const PackageName = struct {
     docs: Docs,
     namespace: Id,
     name: Id,
-    version: ?*const Version,
+    version: ?*Version,
 
-    pub fn fromNode(allocator: mem.Allocator, node: *const ts.Node) !*PackageName {
-        _ = node;
+    pub fn fromNode(
+        allocator: mem.Allocator,
+        source: []const u8,
+        node: *const ts.Node,
+    ) !*PackageName {
         const self = try allocator.create(PackageName);
         var docs = std.array_list.Managed([]const u8).init(allocator);
         defer docs.deinit();
         errdefer docs.deinit();
-        _ = &docs;
+
+        var cursor = node.tree.walk();
+        defer cursor.destroy();
+        errdefer cursor.destroy();
+        const named_children = try node.namedChildren(&cursor, allocator);
+        defer allocator.free(named_children);
+        var text_components: [3][]const u8 = undefined;
+
+        for (named_children, 0..) |child, i| {
+            text_components[i] = getNodeText(source, &child);
+        }
+
+        for (0..(text_components.len - named_children.len)) |i| {
+            text_components[named_children.len + i] = "";
+        }
+
+        const namespace, const name, const version_string = text_components;
+
+        const version = if (version_string.len > 0) try Version.fromText(
+            allocator,
+            version_string,
+        ) else null;
 
         self.* = .{
             .docs = try allocator.dupe([]const u8, docs.items),
-            .namespace = "",
-            .name = "",
-            .version = null,
+            .namespace = namespace,
+            .name = name,
+            .version = version,
         };
 
-        debug.print("{}", .{self});
         return self;
     }
 
     pub fn deinit(self: *const PackageName, allocator: mem.Allocator) void {
         allocator.free(self.docs);
+        if (self.version) |version| version.deinit(allocator);
         allocator.destroy(self);
     }
 };
@@ -351,9 +379,37 @@ pub const Version = struct {
     major: u64,
     minor: u64,
     patch: u64,
-    pre: ?[]const u8,
-    build: ?[]const u8,
+    pre: ?[]const u8 = null,
+    build: ?[]const u8 = null,
+
+    // TODO: Handle SemVer labels
+    pub fn fromText(allocator: mem.Allocator, text: []const u8) !*Version {
+        const version = try allocator.create(Version);
+        var values = mem.splitScalar(u8, text, '.');
+
+        version.* = .{
+            .major = try parseVersionNumber(values.next().?),
+            .minor = try parseVersionNumber(values.next().?),
+            .patch = try parseVersionNumber(values.next().?),
+        };
+
+        return version;
+    }
+
+    pub fn deinit(self: *Version, allocator: mem.Allocator) void {
+        allocator.destroy(self);
+    }
+
+    pub fn parseVersionNumber(string: []const u8) !u64 {
+        return try std.fmt.parseUnsigned(u64, string, 10);
+    }
 };
+
+fn getNodeText(source: []const u8, node: *const ts.Node) []const u8 {
+    const start_byte = node.startByte();
+    const end_byte = node.endByte();
+    return source[start_byte..end_byte];
+}
 
 test Package {
     const allocator = testing.allocator;
@@ -365,7 +421,7 @@ test Package {
     try parser.setLanguage(language);
 
     const code =
-        \\package test:my-package;
+        \\package wit-zig:types@0.0.0;
         \\
         \\interface inter {
         \\    type name = u8; 
@@ -382,6 +438,65 @@ test Package {
     defer tree.?.destroy();
     const node = tree.?.rootNode();
 
-    var package = try Package.fromNode(allocator, &node);
+    var package = try Package.fromNode(allocator, code, &node);
     defer package.deinit(allocator);
+}
+
+test PackageName {
+    const source = "package wit-zig:types";
+    const source_with_version = source ++ "@0.1.2";
+    const namespace = "wit-zig";
+    const name = "types";
+
+    try testPacakgeName(source, namespace, name, null);
+    var result = testPacakgeName(source, namespace, name, .{ 0, 0, 0 });
+    try testing.expectError(error.PackageNameHasNoVersion, result);
+
+    try testPacakgeName(source_with_version, namespace, name, .{ 0, 1, 2 });
+    result = testPacakgeName(source_with_version, namespace, name, null);
+    try testing.expectError(error.PackageNameHasVersion, result);
+}
+
+fn testPacakgeName(
+    source: []const u8,
+    namespace: []const u8,
+    name: []const u8,
+    version: ?[3]u64,
+) !void {
+    const allocator = testing.allocator;
+
+    const language = tsw();
+    defer language.destroy();
+
+    const parser = ts.Parser.create();
+    defer parser.destroy();
+    try parser.setLanguage(language);
+
+    // Parse some source code and get the root node
+    var tree = parser.parseString(source, null);
+    defer tree.?.destroy();
+    var node = tree.?.rootNode().namedChild(0).?;
+    var package_name = try PackageName.fromNode(allocator, source, &node);
+    defer package_name.deinit(allocator);
+
+    try testing.expectEqualStrings(namespace, package_name.namespace);
+    try testing.expectEqualStrings(name, package_name.name);
+
+    if (version) |v| {
+        if (package_name.version) |pv| {
+            for ([3]u64{ pv.major, pv.minor, pv.patch }, 0..) |n, i| {
+                try testing.expectEqual(v[i], n);
+            }
+        } else return error.PackageNameHasNoVersion;
+    } else if (package_name.version) |_| return error.PackageNameHasVersion;
+}
+
+test Version {
+    const allocator = testing.allocator;
+    var version = try Version.fromText(allocator, "0.1.2");
+    defer version.deinit(allocator);
+
+    try testing.expectEqual(0, version.major);
+    try testing.expectEqual(1, version.minor);
+    try testing.expectEqual(2, version.patch);
 }
